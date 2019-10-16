@@ -11,6 +11,7 @@
 2. Add the `credentials.json` to the repository's directory.
 3. `$ cp creds_template.py creds.py` and add username and password in `creds.py`.
 4. Install the required dependencies: `pip install -r requirements.txt`
+5. `$ cp courses_template.py courses.py` and specify a list of courses that you want to import into your calendar (if needed)
 5. Run the script (example):
 ```
 (venv) $ python3 main.py "University" "2018-12-21"

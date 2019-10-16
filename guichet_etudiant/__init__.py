@@ -34,7 +34,7 @@ class GuichetEtudiant:
         
         # Add only selected courses if specified, else all.
         if COURSES:
-            events = list(filter(lambda c: c["Cours"] in COURSES, events))
+            events = [e for e in events if e["Cours"] in COURSES]
         
         print("The following courses will be added to the calendar:")
         courses = {e['Cours'] for e in events}

@@ -1,3 +1,6 @@
+# Project related files
+courses.py
+
 # Ignore virtual environment
 .python-version
 

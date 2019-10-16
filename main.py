@@ -47,6 +47,11 @@ def insert_events(service, calendar_id, events):
                 'dateTime': rfc3339.rfc3339(end_date),
                 'timeZone': 'Europe/Luxembourg'
             },
+            'extendedProperties': {
+                'private': {
+                    'sync-application': 'gesync',
+                },
+            },
             'reminders': {
                 'useDefault': False,
                 'overrides': [
@@ -78,10 +83,18 @@ def clear_from_midnight(service, calendar_id):
     while True:
         events_results = service.events().list(
             calendarId=calendar_id, pageToken=page_token,
-            timeMin=midnight.utcnow().isoformat() + "Z"
+            timeMin=midnight.isoformat() + "Z"
         ).execute()
 
-        event_ids |= set([e["id"] for e in events_results.get("items", [])])
+        for e in events_results.get("items", []):
+            extendedProperties = e.get("extendedProperties")
+            if extendedProperties:
+                private = extendedProperties.get("private")
+                if private:
+                    sync_application = private.get("sync-application")
+                    if sync_application == 'gesync':
+                        event_ids.add(e["id"])
+
         page_token = events_results.get("nextPageToken")
         if not page_token:
             break
@@ -133,9 +146,9 @@ def main():
     if not calendar_id:
         raise ValueError("No given calendar found")
 
-    print("Clearing ALL events in calendar \"{}\"".format(calendar_summary))
+    print("Clearing gesync events in calendar \"{}\"".format(calendar_summary))
     clear_from_midnight(service, calendar_id)
-
+    
     guichet_etudiant = GuichetEtudiant(USERNAME, PASSWORD)
     print("Fetching new events from GuichetEtudiant...")
     events = guichet_etudiant.get_events(start_date, end_date)
