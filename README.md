@@ -1,10 +1,6 @@
 # gesync
 `gesync` synchronizes the Guichet Etudiant calendar to Google Calendar
 
-## Demo
-
-![Demonstration of gesync](demo.gif)
-
 ## Requirements
 
 - Python 3.x
@@ -22,3 +18,7 @@
 ```
 (venv) $ python main.py
 ```
+
+## Demo
+
+![Demonstration of gesync](demo.gif)
