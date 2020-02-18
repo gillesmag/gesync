@@ -1,11 +1,12 @@
+.DS_Store
+
 # Project related files
-courses.py
+config.ini
 
 # Ignore virtual environment
 .python-version
 
 # Sensitive files
-creds.py
 credentials.json
 token.json
 

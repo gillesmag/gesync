@@ -1,160 +1,150 @@
-from datetime import datetime, time
+from datetime import timedelta, datetime, date
 import argparse
-import json
 
-from googleapiclient.discovery import build
-# from googleapiclient.errors import HttpError
-from httplib2 import Http
-from oauth2client import file, client, tools
+from calendars import GoogleCalendar
+from guichet_etudiant import GuichetEtudiant, AuthenticationError
 
-from guichet_etudiant import GuichetEtudiant
+from configparser import ConfigParser
 
-import rfc3339
+import re
+import os.path
 
-from creds import USERNAME, PASSWORD
+import click
+import inquirer
 
-SCOPES = 'https://www.googleapis.com/auth/calendar'
+def compute_period(expression, start_date):
+    match = re.match(r"^(\d+)([dmy])$", expression)
+    if match is None or match.groups() is None:
+        raise ValueError(f"period {expression} is not specified in the appropriate format")
+    amount, unit = match.groups()
+    unit_multipliers = {"d": 1, "m": 30, "y": 365}
+    days = int(amount) * unit_multipliers[unit]
+    return start_date + timedelta(days=days)
 
+def initialize_configuration(config):
+    config['general'] = {}
+    config['credentials'] = {}
+    config['courses'] = {}
 
-def find_calendar_id(service, calendar_name):
-    calendar_list = service.calendarList()
-    request = calendar_list.list()
-    while request is not None:
-        cal_list = request.execute()
-        for calendar_entry in cal_list['items']:
-            if calendar_entry['summary'] == calendar_name:
-                return calendar_entry["id"]
-        request = calendar_list.list_next(request, cal_list)
-        page_token = calendar_list.get('nextPageToken')
-    return None
-
-
-def insert_events(service, calendar_id, events):
-    """ Inserts events into the Google Calendar """
-    batch = service.new_batch_http_request()
-    date_fmt = "%Y/%m/%d %H:%M"
-    for event in events:
-        start_date = datetime.strptime(event["DateDebut"], date_fmt)
-        end_date = datetime.strptime(event["DateFin"], date_fmt)
-        event = {
-            'summary': event["Title"],
-            'location': event["Local"],
-            'start': {
-                'dateTime': rfc3339.rfc3339(start_date),
-                'timeZone': 'Europe/Luxembourg'
-            },
-            'end': {
-                'dateTime': rfc3339.rfc3339(end_date),
-                'timeZone': 'Europe/Luxembourg'
-            },
-            'extendedProperties': {
-                'private': {
-                    'sync-application': 'gesync',
-                },
-            },
-            'reminders': {
-                'useDefault': False,
-                'overrides': [
-                    {'method': 'popup', 'minutes': 15},
-                ],
-            },
-        }
-        batch.add(
-            service.events().insert(calendarId=calendar_id, body=event),
-            callback=handle_request_error
-        )
-    batch.execute()
-
-
-def handle_request_error(request_id, response, exception):
-    if exception is not None:
-        error = json.loads(exception.content).get("error")
-        if error.get("code") != 410:  # Resource already deleted:
-            print("Error:", error.get("message"))
-
-
-# Clears events in calendar from midnight on
-def clear_from_midnight(service, calendar_id):
-    batch = service.new_batch_http_request()
-    midnight = datetime.combine(datetime.now().date(), time())
-    page_token = None
-    event_ids = set()
-
+    print('General configuration options:')
+    config['general']['calendar'] = click.prompt("Google Calendar name", type=str)
     while True:
-        events_results = service.events().list(
-            calendarId=calendar_id, pageToken=page_token,
-            timeMin=midnight.isoformat() + "Z"
-        ).execute()
-
-        for e in events_results.get("items", []):
-            extendedProperties = e.get("extendedProperties")
-            if extendedProperties:
-                private = extendedProperties.get("private")
-                if private:
-                    sync_application = private.get("sync-application")
-                    if sync_application == 'gesync':
-                        event_ids.add(e["id"])
-
-        page_token = events_results.get("nextPageToken")
-        if not page_token:
+        config['general']['period'] = click.prompt("Period of time to fetch data (units: d[ay]/m[onth]/y[ear], example: 10d)", type=str)
+        try:
+            start_date = date.today()
+            end_date = compute_period(config['general']['period'], start_date)
+        except ValueError:
+            click.secho("Wrong format! Please try again.")
+            continue
+        else:
             break
 
-    for event_id in event_ids:
-        batch.add(
-            service.events().delete(
-                calendarId=calendar_id, eventId=event_id
-            ),
-            callback=handle_request_error
-        )
+    print()
+    print("Guichet Etudiant credentials:")
 
-    batch.execute()
+    while True:
+        username = click.prompt("Username")
+        password = click.prompt("Password", hide_input=True)
 
+        config['credentials']['username'] = username
+        config['credentials']['password'] = password
+
+        try:
+            ge = GuichetEtudiant(username, password)
+            break
+        except AuthenticationError as e:
+            print()
+            print(e)
+            print("Please try logging in again!")
+
+    courses = list(set(e["Cours"] for e in ge.get_events(start_date, end_date)))
+    answers = inquirer.prompt([inquirer.Checkbox(
+        'courses',
+        message="Select which courses you would like to synchronize",
+        choices=courses,
+        default=courses,
+    )], theme=inquirer.themes.GreenPassion())['courses']
+
+    config['courses'] = {a: None for a in answers}
+
+    with open('config.ini', 'w') as configfile:
+        config.write(configfile)
+
+    exit()
 
 def main():
+    config = ConfigParser(allow_no_value=True)
+    # Don't convert options to lowercase (which is the default for ConfigParser)
+    config.optionxform = str
+
+    config_path = 'config.ini'
+    if os.path.exists(config_path):
+        config.read(config_path)
+    else:
+        initialize_configuration(config)
+    
     date_fmt = "%Y-%m-%d"
     parser = argparse.ArgumentParser(
-        description="Sync uni.lu Guichet Etudiant with Google Calendar",
-        parents=[tools.argparser]
+        description="Sync uni.lu Guichet Etudiant with Google Calendar"
     )
     parser.add_argument(
-        "calendar", type=str,
+        "--calendar", type=str,
         help="Google Calendar name into which to add events."
     )
     parser.add_argument(
-        "end_date", type=str,
+        "--end_date", type=str,
         help="End date (format: yyyy-mm-dd)"
     )
     parser.add_argument(
-        "--start_date", type=str, required=False,
+        "--start_date", type=str,
         default=datetime.now().strftime(date_fmt),
         help="Start date (format: yyyy-mm-dd)"
     )
+    parser.add_argument(
+        "--clear", action='store_true',
+        help="Only clear calendar, do not import any courses."
+    )
     flags = parser.parse_args()
 
-    calendar_summary = flags.calendar
-    start_date = datetime.strptime(flags.start_date, date_fmt)
-    end_date = datetime.strptime(flags.end_date, date_fmt)
+    if flags.calendar:
+        calendar_name = flags.calendar
+    else:
+        calendar_name = config['general']['calendar']
 
-    store = file.Storage("token.json")
-    creds = store.get()
-    if not creds or creds.invalid:
-        flow = client.flow_from_clientsecrets("credentials.json", SCOPES)
-        creds = tools.run_flow(flow, store, flags)
+    if flags.start_date:
+        start_date = datetime.strptime(flags.start_date, date_fmt).date()
+    else:
+        start_date = date.today()
 
-    service = build("calendar", "v3", http=creds.authorize(Http()))
-    calendar_id = find_calendar_id(service, calendar_summary)
-    if not calendar_id:
-        raise ValueError("No given calendar found")
+    if flags.end_date:
+        end_date = datetime.strptime(flags.end_date, date_fmt).date()
+    else:
+        end_date = compute_period(config['general']['period'], start_date)
 
-    print("Clearing gesync events in calendar \"{}\"".format(calendar_summary))
-    clear_from_midnight(service, calendar_id)
+    username = config['credentials']['username']
+    password = config['credentials']['password']
+
+    course_selection = config['courses']
+
+    cal = GoogleCalendar(calendar_name)
+
+    try:
+        guichet_etudiant = GuichetEtudiant(username, password, list(course_selection))
+    except AuthenticationError:
+        print("Invalid username/password, please update the config.ini in case your credentials have changed.")
+        exit()
+
+    if flags.clear:
+        print(f"Only clearing gesync events in calendar '{calendar_name}'")
+        cal.clear_from_midnight()
+        return
+
+    cal.clear_from_midnight()
     
-    guichet_etudiant = GuichetEtudiant(USERNAME, PASSWORD)
     print("Fetching new events from GuichetEtudiant...")
     events = guichet_etudiant.get_events(start_date, end_date)
     print("Inserting events into calendar...")
-    insert_events(service, calendar_id, events)
-    print("done.")
+    cal.insert_events(events)
 
 
 if __name__ == '__main__':
